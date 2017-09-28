@@ -7,11 +7,12 @@
 * AUTHOR      :       Utkarsh Mathur           START DATE :    18 Sep 17
 *
 * CHANGES :
+*                     Added Support to multi level cache : UM : 20 Sep 17
+*                     Added Victim cache                 : UM : 26 Sep 17
 *
 *H***********************************************************************/
 
 #include "cache.h"
-//#define DEBUG
 
 // Since this is a small proj, add all utils in this
 // file instead of a separate file
@@ -99,9 +100,14 @@ cachePT  cacheInit(
 // This will do a cache connection
 // Cache A -> Cache B
 // Thus, cache A is more close to processor
+// NOTE: Implicit connection to victim cache
 inline void cacheConnect( cachePT cacheAP, cachePT cacheBP )
 {
-   cacheAP->nextLevel     = cacheBP;
+   cacheAP->nextLevel              = cacheBP;
+   // Since victim cache also has access to next level cache, do the correct connection
+   if( cacheAP->victimP  != NULL ){
+      cacheAP->victimP->nextLevel  = cacheBP;
+   }
 }
 
 // Attach victim cache to an existing cache
@@ -113,6 +119,8 @@ void cacheAttachVictimCache( cachePT cacheP, int size, int blockSize, cacheTimin
       sprintf(name, "VC");
       //, cacheP->name);
       cachePT victimP           = cacheInit( name, size, assoc, blockSize, POLICY_REP_LRU, POLICY_WRITE_BACK_WRITE_ALLOCATE, trayP );
+      // Since victim cache also has access to next level cache, do the correct connection
+      victimP->nextLevel        = cacheP->nextLevel;
       victimP->isVictimCache    = TRUE;
       cacheP->victimP           = victimP;
    }
@@ -133,17 +141,11 @@ cacheCommT cacheCommunicate( cachePT cacheP, int address, cmdDirT dir )
    cacheDecodeAddress(cacheP, address, &tag, &index, &offset);
    if( dir == CMD_DIR_READ ){
       // Drop data as it is of no concern as of now
-#ifdef DEBUG
-      printf("%s Read: %x(tag %x, index %d)\n", cacheP->name, address, tag, index);
-#endif
       hit                               = cacheDoRead( cacheP, address, tag, index, offset, &setIndex );
       cacheP->readHitCount             += (hit)  ? 1 : 0;
       cacheP->readMissCount            += (!hit) ? 1 : 0;
    } else{
       // Write random data as it is of no use as of now
-#ifdef DEBUG
-      printf("%s Write: %x(tag %x, index %d)\n", cacheP->name, address, tag, index);
-#endif
       hit                               = cacheDoWrite( cacheP, address, tag, index, offset, &setIndex );
       cacheP->writeHitCount            += (hit)  ? 1 : 0;
       cacheP->writeMissCount           += (!hit) ? 1 : 0;
@@ -210,23 +212,10 @@ boolean cacheDoReadWriteCommon( cachePT cacheP, int address, int tag, int index,
    *setIndexP = setIndex;
    // For read in Victim Cache, end right here!
    if( cacheP->isVictimCache && dir == CMD_DIR_READ ){
-#ifdef DEBUG
-      printf("%s VICTIM CACHE\n", hit ? "HIT" : "MISS");
-      printf("%s Changed set %d: ", cacheP->name, index);
-      for( int assocIndex = 0; assocIndex < cacheP->assoc; assocIndex++ ){
-         if( rowP[assocIndex]->valid )
-         printf("%x %c\t", rowP[assocIndex]->tag, (rowP[assocIndex]->dirty) ? 'D' : ' ' );
-         else printf(" - \t");
-      }
-      printf("\n");
-#endif
       return hit;
    }
 
    if( hit ){
-#ifdef DEBUG
-      printf("%s HIT\n", cacheP->name);
-#endif
       // Update replacement unit's counter value
       if( cacheP->repPolicy == POLICY_REP_LRU ){
          cacheHitUpdateLRU( cacheP, index, setIndex );
@@ -238,9 +227,6 @@ boolean cacheDoReadWriteCommon( cachePT cacheP, int address, int tag, int index,
    // In case of a miss, read back from higher level cache/memory
    // and do a replacement based on policy
    else{
-#ifdef DEBUG
-      printf("%s MISS\n", cacheP->name);
-#endif
       // Evict and allocate a block IIF allocate is set or read
       if( ( dir == CMD_DIR_WRITE && allocate ) || dir == CMD_DIR_READ ){
          // Irrespective of replacement policy, check if there exists
@@ -260,6 +246,7 @@ boolean cacheDoReadWriteCommon( cachePT cacheP, int address, int tag, int index,
             setIndex           = cacheFindReplacementUpdateCounterLFU( cacheP, index, tag, setIndex, success );
          }
 
+         //-------------- VICTIM CACHE SPECIFIC CODE BEGIN ---------------------------------
          // If Victim cache is present, check if it has data or not
          boolean bypassWriteback = FALSE;
          if( cacheP->victimP != NULL ){
@@ -270,28 +257,30 @@ boolean cacheDoReadWriteCommon( cachePT cacheP, int address, int tag, int index,
             if( comm.hit ){
                cacheVictimSwap( cacheP, index, setIndex, comm.index, comm.setIndex );
    
-#ifdef DEBUG
-               printf("%s Changed set %d: ", cacheP->name, index);
-               for( int assocIndex = 0; assocIndex < cacheP->assoc; assocIndex++ ){
-                  if( rowP[assocIndex]->valid )
-                  printf("%x %c\t", rowP[assocIndex]->tag, (rowP[assocIndex]->dirty) ? 'D' : ' ' );
-                  else printf(" - \t");
-               }
-               printf("\n");
-#endif
-   
                *setIndexP = setIndex;
                // Since there is nothing else to do, exit the function here
-               return hit;
+               // Also since data was found in victim, it is considered as a hit
+               // for current cache as well
+               return TRUE;
             } else{
                // Write the evicted data to victim cache and continue fetching
                // new data for current block
                if( rowP[setIndex]->valid ){
-                  cacheCommunicate( cacheP->victimP, cacheEncodeAddress( cacheP, rowP[setIndex]->tag, index, 0 ), CMD_DIR_WRITE );
-                  bypassWriteback = TRUE;
+                  cacheCommT victimComm               = cacheCommunicate( cacheP->victimP, 
+                                                           cacheEncodeAddress( cacheP, rowP[setIndex]->tag, index, 0 ), 
+                                                           CMD_DIR_WRITE );
+                  // Exclusively update the dirty bit to make data consistent
+                  // TODO: Create a wrapper function to stop direct access
+                  //       to internal structures. For now it will work
+                  cacheP->victimP
+                        ->tagStoreP[victimComm.index]
+                        ->rowP[victimComm.setIndex]
+                        ->dirty                       = rowP[setIndex]->dirty;
+                  bypassWriteback                     = TRUE;
                }
             }
          }
+         //-------------- VICTIM CACHE SPECIFIC CODE END -----------------------------------
 
          // Is the data we are updating dirty?
          if( rowP[setIndex]->valid && !bypassWriteback ){
@@ -303,7 +292,9 @@ boolean cacheDoReadWriteCommon( cachePT cacheP, int address, int tag, int index,
 
          // In case of write allocate/read, miss will cause data to be read back from
          // memory to be overridden
-         cacheCommunicate( cacheP->nextLevel, address, CMD_DIR_READ );
+         // This is not needed in case of victim cache
+         if( !cacheP->isVictimCache )
+            cacheCommunicate( cacheP->nextLevel, address, CMD_DIR_READ );
 
          // Update tag value and make bit non-dirty
          // CAUTION: setting dirty will be handled in
@@ -320,15 +311,6 @@ boolean cacheDoReadWriteCommon( cachePT cacheP, int address, int tag, int index,
       }
 
    }
-#ifdef DEBUG
-   printf("%s Changed set %d: ", cacheP->name, index);
-   for( int assocIndex = 0; assocIndex < cacheP->assoc; assocIndex++ ){
-      if( rowP[assocIndex]->valid )
-      printf("%x %c\t", rowP[assocIndex]->tag, (rowP[assocIndex]->dirty) ? 'D' : ' ' );
-      else printf(" - \t");
-   }
-   printf("\n");
-#endif
    *setIndexP = setIndex;
 
    return hit;
@@ -349,10 +331,6 @@ void cacheVictimSwap( cachePT cacheP, int index, int setIndex, int victimIndex, 
    cacheDecodeAddress(cacheP, victimAddress, &newCacheTag, &index, &offset);
    cacheDecodeAddress(cacheP->victimP, cacheAddress, &newVictimTag, &index, &offset);
    
-#ifdef DEBUG
-   printf("Swapping %x with %x\n", newVictimTag, newCacheTag);
-#endif
-
    // Swap the dirty bits
    int victimDirty      = victimTagP->dirty;
    victimTagP->dirty    = cacheTagP->dirty;

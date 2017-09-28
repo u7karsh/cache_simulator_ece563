@@ -12,7 +12,6 @@
 
 #include "all.h"
 #include "cache.h"
-//#define DEBUG
 
 void doTrace( cachePT cacheP, FILE* fp )
 {
@@ -26,16 +25,9 @@ void doTrace( cachePT cacheP, FILE* fp )
       ASSERT(bytesRead <= 0, "fscanf read nothing!");
 
       if( rw == 'r' || rw == 'R' ){
-#ifdef DEBUG
-         printf("# %d : Read %x\n", count, address);
-         printf("Address %x READ\n", address);
-#endif
          // Read
          cacheCommunicate( cacheP, address, CMD_DIR_READ );
       } else{
-#ifdef DEBUG
-         printf("# %d : Write %x\n", count, address);
-#endif
          //Write
          cacheCommunicate( cacheP, address, CMD_DIR_WRITE );
       }
@@ -69,8 +61,8 @@ int main( int argc, char** argv )
    // It's L (small case) 1P.. Don't confuse as 1 and l seem same :)
    cachePT  l1P          = cacheInit( "L1", l1Size, l1Assoc, blockSize, repPolicy, POLICY_WRITE_BACK_WRITE_ALLOCATE, &tray );
    cachePT  l2P          = cacheInit( "L2", l2Size, l2Assoc, blockSize, repPolicy, POLICY_WRITE_BACK_WRITE_ALLOCATE, &tray );
-   cacheAttachVictimCache( l1P, victimSize, blockSize, &tray );
    cacheConnect( l1P, l2P );
+   cacheAttachVictimCache( l1P, victimSize, blockSize, &tray );
    
 
    printf("\t===== Simulator configuration =====\n");
@@ -85,5 +77,6 @@ int main( int argc, char** argv )
    cachePrintContents( l1P->victimP );
    cachePrintContents( l2P );
    cachePrintStats( l1P );
+   cachePrintStats( l1P->victimP );
    cachePrintStats( l2P );
 }
