@@ -63,6 +63,13 @@ typedef struct _tagStoreT{
    int               countSet;
 }tagStoreT;
 
+// Cache communication struct
+typedef struct _cacheCommT{
+   boolean            hit;
+   int                index;
+   int                setIndex;
+}cacheCommT;
+
 // Generic CACHE structure.
 typedef struct _cacheT{
    /*
@@ -79,6 +86,8 @@ typedef struct _cacheT{
    // cache and no further translations can be made
    // below this level, we have main memory
    cachePT               nextLevel; 
+   // Optional Victim cache
+   cachePT               victimP;
    // Policies
    replacementPolicyT    repPolicy;
    writePolicyT          writePolicy; 
@@ -98,14 +107,13 @@ typedef struct _cacheT{
    int                  boMask;
 
    int                  readHitCount;
-   int                  readCompulsaryMissCount;
-   int                  readCapacityMissCount;
+   int                  readMissCount;
 
    int                  writeHitCount;
-   int                  writeCompulsaryMissCount;
-   int                  writeCapacityMissCount;
+   int                  writeMissCount;
 
    int                  writeBackCount;
+   int                  victimSwapCount;
 
 
    // Timing params
@@ -113,6 +121,9 @@ typedef struct _cacheT{
    double               hitTime;
    
    tagStorePT           *tagStoreP;
+
+   // Following variable are only for victim cache related config
+   boolean              isVictimCache;
 }cacheT;
 
 // Since the timing related values are a lot, lets
@@ -144,12 +155,12 @@ cachePT  cacheInit(
       cacheTimingTrayPT  trayP );
 
 void cacheConnect( cachePT cacheAP, cachePT cacheBP );
-void cacheCommunicate( cachePT cacheP, int address, cmdDirT dir );
+cacheCommT cacheCommunicate( cachePT cacheP, int address, cmdDirT dir );
 void cacheDecodeAddress( cachePT cacheP, int address, int* tag, int* index, int* offset );
 
-int cacheDoReadWriteCommon( cachePT cacheP, int address, int tag, int index, int offset, int* setIndexP, cmdDirT dir, int allocate );
-int cacheDoRead( cachePT cacheP, int address, int tag, int index, int offset );
-int cacheDoWrite( cachePT cacheP, int address, int tag, int index, int offset );
+boolean cacheDoReadWriteCommon( cachePT cacheP, int address, int tag, int index, int offset, int* setIndexP, cmdDirT dir, int allocate );
+boolean cacheDoRead( cachePT cacheP, int address, int tag, int index, int offset, int* setIndexP);
+boolean cacheDoWrite( cachePT cacheP, int address, int tag, int index, int offset, int* setIndexP );
 void cacheWriteBackData( cachePT cacheP, int address );
 int cacheFindReplacementUpdateCounterLRU( cachePT cacheP, int index, int tag, int overrideSetIndex, int doOverride );
 int cacheFindReplacementUpdateCounterLFU( cachePT cacheP, int index, int tag, int overrideSetIndex, int doOverride );
@@ -164,5 +175,7 @@ void cachePrintContents( cachePT cacheP );
 void cachePrintStats( cachePT cacheP );
 double cacheComputeMissPenalty( cachePT cacheP, cacheTimingTrayPT trayP );
 double cacheComputeHitTime( cachePT cacheP, cacheTimingTrayPT trayP );
+void cacheAttachVictimCache( cachePT cacheP, int size, int blockSize, cacheTimingTrayPT trayP );
+void cacheVictimSwap( cachePT cacheP, int index, int setIndex, int victimIndex, int victimSetIndex );
 
 #endif

@@ -11,6 +11,7 @@
 *H***********************************************************************/
 
 #include "cache.h"
+//#define DEBUG
 
 // Since this is a small proj, add all utils in this
 // file instead of a separate file
@@ -47,6 +48,8 @@ cachePT  cacheInit(
       writePolicyT       writePolicy,
       cacheTimingTrayPT  trayP )
 {
+   if( size <= 0 ) return NULL;
+
    // Do calloc so that mem is reset to 0
    cachePT  cacheP        = ( cachePT ) calloc( 1, sizeof( cacheT ) );
    strcpy( cacheP->name, name );
@@ -101,28 +104,56 @@ inline void cacheConnect( cachePT cacheAP, cachePT cacheBP )
    cacheAP->nextLevel     = cacheBP;
 }
 
+// Attach victim cache to an existing cache
+void cacheAttachVictimCache( cachePT cacheP, int size, int blockSize, cacheTimingTrayPT trayP )
+{
+   if( size > 0 ){
+      char name[128];
+      int assoc                 = ceil( (double) size / (double) ( blockSize ) );
+      sprintf(name, "VC");
+      //, cacheP->name);
+      cachePT victimP           = cacheInit( name, size, assoc, blockSize, POLICY_REP_LRU, POLICY_WRITE_BACK_WRITE_ALLOCATE, trayP );
+      victimP->isVictimCache    = TRUE;
+      cacheP->victimP           = victimP;
+   }
+}
+
 // Entry function for communicating with this cache
 // Its the input of cache
 // address: input address of cache
 // dir    : read/write
-void cacheCommunicate( cachePT cacheP, int address, cmdDirT dir )
+cacheCommT cacheCommunicate( cachePT cacheP, int address, cmdDirT dir )
 {
+   if( cacheP == NULL ) return (cacheCommT){FALSE, 0, 0};
+
    // For safety, init with 0s
-   int tag=0, index=0, offset=0, hit;
+   int tag=0, index=0, offset=0, setIndex=0;
+   cacheCommT comm;
+   boolean hit;
    cacheDecodeAddress(cacheP, address, &tag, &index, &offset);
    if( dir == CMD_DIR_READ ){
       // Drop data as it is of no concern as of now
-      hit                               = cacheDoRead( cacheP, address, tag, index, offset );
-      cacheP->readHitCount             += (hit ==  1) ? 1 : 0;
-      cacheP->readCompulsaryMissCount  += (hit == -1) ? 1 : 0;
-      cacheP->readCapacityMissCount    += (hit ==  0) ? 1 : 0;
+#ifdef DEBUG
+      printf("%s Read: %x(tag %x, index %d)\n", cacheP->name, address, tag, index);
+#endif
+      hit                               = cacheDoRead( cacheP, address, tag, index, offset, &setIndex );
+      cacheP->readHitCount             += (hit)  ? 1 : 0;
+      cacheP->readMissCount            += (!hit) ? 1 : 0;
    } else{
       // Write random data as it is of no use as of now
-      hit                               = cacheDoWrite( cacheP, address, tag, index, offset );
-      cacheP->writeHitCount            += (hit ==  1) ? 1 : 0;
-      cacheP->writeCompulsaryMissCount += (hit == -1) ? 1 : 0;
-      cacheP->writeCapacityMissCount   += (hit ==  0) ? 1 : 0;
+#ifdef DEBUG
+      printf("%s Write: %x(tag %x, index %d)\n", cacheP->name, address, tag, index);
+#endif
+      hit                               = cacheDoWrite( cacheP, address, tag, index, offset, &setIndex );
+      cacheP->writeHitCount            += (hit)  ? 1 : 0;
+      cacheP->writeMissCount           += (!hit) ? 1 : 0;
    }
+
+   comm.index                           = index;
+   comm.setIndex                        = setIndex;
+   comm.hit                             = hit;
+
+   return comm;
 }
 
 // Address decoder for cache based on config
@@ -140,16 +171,26 @@ void cacheDecodeAddress( cachePT cacheP, int address, int* tagP, int* indexP, in
    *indexP         = utilShiftAndMask( address, cacheP->boSize, cacheP->indexMask );
    // boSize shift + indexSize shift
    *tagP           = utilShiftAndMask( address, cacheP->boSize + cacheP->indexSize, cacheP->tagMask );
-   // printf("Decode[%x] tag: %x index: %x offset: %x\n", address, *tagP, *indexP, *offsetP);
 }
 
-// hit =  0 => miss (capacity miss)
-// hit = -1 => Compulsary miss
+// Address decoder for cache based on config
+//    --------------------------------------------
+//   |    Tag      |     Index   |  Block Offset  |
+//    --------------------------------------------
+int cacheEncodeAddress( cachePT cacheP, int tag, int index, int offset )
+{
+   return ( cacheP->tagMask  & tag     ) << (cacheP->boSize + cacheP->indexSize) |
+          ( cacheP->indexMask & index  ) << (cacheP->boSize) |
+          ( cacheP->boMask & offset);
+}
+
+// Utility function to help doRead and doWrite
+// hit =  0 => miss
 // hit =  1 => hit
-int cacheDoReadWriteCommon( cachePT cacheP, int address, int tag, int index, int offset, int* setIndexP, cmdDirT dir, int allocate )
+boolean cacheDoReadWriteCommon( cachePT cacheP, int address, int tag, int index, int offset, int* setIndexP, cmdDirT dir, int allocate )
 {
    // Assume capacity miss for default case
-   int hit         = 0;
+   boolean hit               = FALSE;
    int setIndex;
 
    ASSERT(cacheP->nSets < index, "index translated to more than available! index: %d, nSets: %d", 
@@ -159,13 +200,33 @@ int cacheDoReadWriteCommon( cachePT cacheP, int address, int tag, int index, int
 
    // Check if its a hit or a miss by looking in each set
    for( setIndex = 0; setIndex < cacheP->assoc ; setIndex++ ){
-      if( rowP[setIndex]->tag == tag ){
-         hit       = 1;
+      // Check tag IFF data is valid
+      if( /*rowP[setIndex]->valid == 1 && */rowP[setIndex]->tag == tag ){
+         hit       = TRUE;
          break;
       }
    }
 
-   if( hit == 1 ){
+   *setIndexP = setIndex;
+   // For read in Victim Cache, end right here!
+   if( cacheP->isVictimCache && dir == CMD_DIR_READ ){
+#ifdef DEBUG
+      printf("%s VICTIM CACHE\n", hit ? "HIT" : "MISS");
+      printf("%s Changed set %d: ", cacheP->name, index);
+      for( int assocIndex = 0; assocIndex < cacheP->assoc; assocIndex++ ){
+         if( rowP[assocIndex]->valid )
+         printf("%x %c\t", rowP[assocIndex]->tag, (rowP[assocIndex]->dirty) ? 'D' : ' ' );
+         else printf(" - \t");
+      }
+      printf("\n");
+#endif
+      return hit;
+   }
+
+   if( hit ){
+#ifdef DEBUG
+      printf("%s HIT\n", cacheP->name);
+#endif
       // Update replacement unit's counter value
       if( cacheP->repPolicy == POLICY_REP_LRU ){
          cacheHitUpdateLRU( cacheP, index, setIndex );
@@ -173,11 +234,15 @@ int cacheDoReadWriteCommon( cachePT cacheP, int address, int tag, int index, int
          cacheHitUpdateLFU( cacheP, index, setIndex );
       }
    }
+
    // In case of a miss, read back from higher level cache/memory
    // and do a replacement based on policy
    else{
-      // Evict and allocate a block IIF allocate is set
-      if( allocate || dir == CMD_DIR_READ ){
+#ifdef DEBUG
+      printf("%s MISS\n", cacheP->name);
+#endif
+      // Evict and allocate a block IIF allocate is set or read
+      if( ( dir == CMD_DIR_WRITE && allocate ) || dir == CMD_DIR_READ ){
          // Irrespective of replacement policy, check if there exists
          // a block with valid bit unset
          int success   = 0;
@@ -195,16 +260,50 @@ int cacheDoReadWriteCommon( cachePT cacheP, int address, int tag, int index, int
             setIndex           = cacheFindReplacementUpdateCounterLFU( cacheP, index, tag, setIndex, success );
          }
 
-         // Is the data we are updating dirty?
-         if( rowP[setIndex]->valid ){
-            if( rowP[setIndex]->dirty ){
-               // Write it back
-               cacheWriteBackData( cacheP, address );
+         // If Victim cache is present, check if it has data or not
+         boolean bypassWriteback = FALSE;
+         if( cacheP->victimP != NULL ){
+            cacheCommT comm = cacheCommunicate( cacheP->victimP, address, CMD_DIR_READ );
+            // If it was a hit in victim cache, do a swap on relevant position
+            // If it was a miss in victim cache, fetch data from lower level.
+            // if eviction is caused, write that data to victim cache
+            if( comm.hit ){
+               cacheVictimSwap( cacheP, index, setIndex, comm.index, comm.setIndex );
+   
+#ifdef DEBUG
+               printf("%s Changed set %d: ", cacheP->name, index);
+               for( int assocIndex = 0; assocIndex < cacheP->assoc; assocIndex++ ){
+                  if( rowP[assocIndex]->valid )
+                  printf("%x %c\t", rowP[assocIndex]->tag, (rowP[assocIndex]->dirty) ? 'D' : ' ' );
+                  else printf(" - \t");
+               }
+               printf("\n");
+#endif
+   
+               *setIndexP = setIndex;
+               // Since there is nothing else to do, exit the function here
+               return hit;
+            } else{
+               // Write the evicted data to victim cache and continue fetching
+               // new data for current block
+               if( rowP[setIndex]->valid ){
+                  cacheCommunicate( cacheP->victimP, cacheEncodeAddress( cacheP, rowP[setIndex]->tag, index, 0 ), CMD_DIR_WRITE );
+                  bypassWriteback = TRUE;
+               }
             }
-         } else{
-            // Compulsary miss
-            hit                = -1;
          }
+
+         // Is the data we are updating dirty?
+         if( rowP[setIndex]->valid && !bypassWriteback ){
+            if( rowP[setIndex]->dirty ){
+               // Construct the address and write it back
+               cacheWriteBackData( cacheP, cacheEncodeAddress( cacheP, rowP[setIndex]->tag, index, 0 ) );
+            }
+         }
+
+         // In case of write allocate/read, miss will cause data to be read back from
+         // memory to be overridden
+         cacheCommunicate( cacheP->nextLevel, address, CMD_DIR_READ );
 
          // Update tag value and make bit non-dirty
          // CAUTION: setting dirty will be handled in
@@ -214,43 +313,80 @@ int cacheDoReadWriteCommon( cachePT cacheP, int address, int tag, int index, int
          rowP[setIndex]->dirty = 0;
       }
 
-      // Since its a miss, refil the value from higer level cache/memory
-      if( cacheP->nextLevel == NULL ){
-         // There is no cache beyond this level.
-         // Its just the memIF now
-         // TODO: Add memIF if required
-      } else{
-         // Next level cache fetch
-         cacheCommunicate( cacheP->nextLevel, address, dir );
+      // Since its a miss, refil the value from higer level cache/memory if 
+      // for write miss, write through based on policy
+      if( dir == CMD_DIR_WRITE && !allocate ){
+         cacheCommunicate( cacheP->nextLevel, address, CMD_DIR_WRITE );
       }
 
    }
+#ifdef DEBUG
+   printf("%s Changed set %d: ", cacheP->name, index);
+   for( int assocIndex = 0; assocIndex < cacheP->assoc; assocIndex++ ){
+      if( rowP[assocIndex]->valid )
+      printf("%x %c\t", rowP[assocIndex]->tag, (rowP[assocIndex]->dirty) ? 'D' : ' ' );
+      else printf(" - \t");
+   }
+   printf("\n");
+#endif
    *setIndexP = setIndex;
 
    return hit;
 }
 
-int cacheDoRead( cachePT cacheP, int address, int tag, int index, int offset )
+// Module to swap contents of victim cache
+void cacheVictimSwap( cachePT cacheP, int index, int setIndex, int victimIndex, int victimSetIndex )
 {
-   int setIndex;
-   return cacheDoReadWriteCommon( cacheP, address, tag, index, offset, &setIndex, CMD_DIR_READ, 1 );
+   tagPT   victimTagP   = cacheP->victimP->tagStoreP[victimIndex]->rowP[victimSetIndex];
+   tagPT   cacheTagP    = cacheP->tagStoreP[index]->rowP[setIndex];
+
+   // Encode
+   int cacheAddress     = cacheEncodeAddress( cacheP, cacheTagP->tag, index, 0 );
+   int victimAddress    = cacheEncodeAddress( cacheP->victimP, victimTagP->tag, victimIndex, 0 );
+
+   // Decode
+   int newCacheTag, newVictimTag, offset;
+   cacheDecodeAddress(cacheP, victimAddress, &newCacheTag, &index, &offset);
+   cacheDecodeAddress(cacheP->victimP, cacheAddress, &newVictimTag, &index, &offset);
+   
+#ifdef DEBUG
+   printf("Swapping %x with %x\n", newVictimTag, newCacheTag);
+#endif
+
+   // Swap the dirty bits
+   int victimDirty      = victimTagP->dirty;
+   victimTagP->dirty    = cacheTagP->dirty;
+   cacheTagP->dirty     = victimDirty;
+
+   // Swap the computed tags
+   victimTagP->tag      = newVictimTag;
+   cacheTagP->tag       = newCacheTag;
+
+   // Update counters as if a hit
+   cacheHitUpdateLRU( cacheP->victimP, victimIndex, victimSetIndex );
+
+   cacheP->victimSwapCount++;
 }
 
-// hit =  0 => miss (capacity miss)
-// hit = -1 => Compulsary miss
-// hit =  1 => hit
-int cacheDoWrite( cachePT cacheP, int address, int tag, int index, int offset )
+boolean cacheDoRead( cachePT cacheP, int address, int tag, int index, int offset, int* setIndexP )
 {
-   int setIndex, hit;
+   return cacheDoReadWriteCommon( cacheP, address, tag, index, offset, setIndexP, CMD_DIR_READ, 1 );
+}
+
+// hit =  0 => miss
+// hit =  1 => hit
+boolean cacheDoWrite( cachePT cacheP, int address, int tag, int index, int offset, int* setIndexP )
+{
+   boolean hit;
    if( cacheP->writePolicy == POLICY_WRITE_BACK_WRITE_ALLOCATE ){
-      hit           = cacheDoReadWriteCommon( cacheP, address, tag, index, offset, &setIndex, CMD_DIR_WRITE, 1 );
+      hit           = cacheDoReadWriteCommon( cacheP, address, tag, index, offset, setIndexP, CMD_DIR_WRITE, 1 );
       // Irrespective of everything, set the dirty bit
       // If it was a miss, common utility will take care of the replacement and will update the
       // tag accordingly
-      cacheP->tagStoreP[index]->rowP[setIndex]->dirty = 1;
+      cacheP->tagStoreP[index]->rowP[*setIndexP]->dirty = 1;
    } else{
       // No block gets dirty in write through
-      hit           = cacheDoReadWriteCommon( cacheP, address, tag, index, offset, &setIndex, CMD_DIR_WRITE, 0 );
+      hit           = cacheDoReadWriteCommon( cacheP, address, tag, index, offset, setIndexP, CMD_DIR_WRITE, 0 );
    }
    return hit;
 }
@@ -259,14 +395,7 @@ void cacheWriteBackData( cachePT cacheP, int address )
 {
    cacheP->writeBackCount++;
    // Pass on to next level cache/memory
-   if( cacheP->nextLevel == NULL ){
-      // There is no cache beyond this level.
-      // Its just the memIF now
-      // TODO: Add memIF if required
-   } else{
-      // Next level cache fetch
-      cacheCommunicate( cacheP->nextLevel, address, CMD_DIR_READ );
-   }
+   cacheCommunicate( cacheP->nextLevel, address, CMD_DIR_WRITE );
 }
 
 // LRU replacement policy engine
@@ -374,6 +503,7 @@ char* cacheGetNamewritePolicyT(writePolicyT policy)
 
 void cachePrettyPrintConfig( cachePT cacheP )
 {
+   if( !cacheP ) return;
    printf("\t%s_BLOCKSIZE:\t\t\t %d\n"         , cacheP->name, cacheP->blockSize);
    printf("\t%s_SIZE:\t\t\t %d\n"              , cacheP->name, cacheP->size);
    printf("\t%s_ASSOC:\t\t\t %d\n"             , cacheP->name, cacheP->assoc);
@@ -383,6 +513,7 @@ void cachePrettyPrintConfig( cachePT cacheP )
 
 void cachePrintContents( cachePT cacheP )
 {
+   if( !cacheP ) return;
    printf("===== %s contents =====\n", cacheP->name);
    for( int setIndex = 0; setIndex < cacheP->nSets; setIndex++ ){
       printf("set\t\t%d:\t\t", setIndex);
@@ -396,8 +527,9 @@ void cachePrintContents( cachePT cacheP )
 
 void cachePrintStats( cachePT cacheP )
 {
-   int readMisses    = cacheP->readCompulsaryMissCount + cacheP->readCapacityMissCount;
-   int writeMisses   = cacheP->writeCompulsaryMissCount + cacheP->writeCapacityMissCount;
+   if( !cacheP ) return;
+   int readMisses    = cacheP->readMissCount;
+   int writeMisses   = cacheP->writeMissCount;
    int readCount     = cacheP->readHitCount + readMisses;
    int writeCount    = cacheP->writeHitCount + writeMisses;
    double missRate   = ( (double)(readMisses + writeMisses) ) / ( (double)(readCount + writeCount) );
@@ -412,6 +544,7 @@ void cachePrintStats( cachePT cacheP )
    printf("\tc. number of %s writes:\t\t%d\n", cacheP->name, writeCount);
    printf("\td. number of %s write misses:\t\t%d\n", cacheP->name, writeMisses);
    printf("\te. %s miss rate:\t\t%0.4f\n", cacheP->name, missRate);
+   printf("\te. number of swaps:\t\t%d\n", cacheP->victimSwapCount);
    printf("\tf. number of writebacks from %s:\t\t%d\n", cacheP->name, cacheP->writeBackCount);
    printf("\tg. total memory traffic:\t\t%d\n\n", memoryTraffic);
    printf("\t==== Simulation results (performance) ====\n");

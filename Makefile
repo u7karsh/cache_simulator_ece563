@@ -1,5 +1,6 @@
 CC = gcc
-OPT = -O3 -m32 -std=c99
+OPT = -g
+#OPT = -O3 -std=c99
 WARN = -Wall
 CFLAGS = $(OPT) $(WARN) $(INC) $(LIB)
 
