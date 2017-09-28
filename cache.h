@@ -113,7 +113,7 @@ typedef struct _cacheT{
    int                  writeMissCount;
 
    int                  writeBackCount;
-   int                  victimSwapCount;
+   int                  swaps;
 
 
    // Timing params
@@ -172,10 +172,19 @@ char* cacheGetNameReplacementPolicyT(replacementPolicyT policy);
 char* cacheGetNamewritePolicyT(writePolicyT policy);
 void cachePrettyPrintConfig( cachePT cacheP );
 void cachePrintContents( cachePT cacheP );
-void cachePrintStats( cachePT cacheP );
 double cacheComputeMissPenalty( cachePT cacheP, cacheTimingTrayPT trayP );
 double cacheComputeHitTime( cachePT cacheP, cacheTimingTrayPT trayP );
 void cacheAttachVictimCache( cachePT cacheP, int size, int blockSize, cacheTimingTrayPT trayP );
 void cacheVictimSwap( cachePT cacheP, int index, int setIndex, int victimIndex, int victimSetIndex );
 
+int cacheGetWBCount( cachePT cacheP );
+void cacheGetStats( cachePT cacheP, 
+                    int     *readCount, 
+                    int     *readMisses, 
+                    int     *writeCount, 
+                    int     *writeMisses, 
+                    double  *missRate, 
+                    int     *swaps, 
+                    int     *writeBacks, 
+                    int     *memoryTraffic );
 #endif

@@ -116,7 +116,8 @@ void cacheAttachVictimCache( cachePT cacheP, int size, int blockSize, cacheTimin
    if( size > 0 ){
       char name[128];
       int assoc                 = ceil( (double) size / (double) ( blockSize ) );
-      sprintf(name, "VC");
+      //TODO: Add parent cache identifier
+      sprintf(name, "Victim Cache");
       //, cacheP->name);
       cachePT victimP           = cacheInit( name, size, assoc, blockSize, POLICY_REP_LRU, POLICY_WRITE_BACK_WRITE_ALLOCATE, trayP );
       // Since victim cache also has access to next level cache, do the correct connection
@@ -343,7 +344,9 @@ void cacheVictimSwap( cachePT cacheP, int index, int setIndex, int victimIndex, 
    // Update counters as if a hit
    cacheHitUpdateLRU( cacheP->victimP, victimIndex, victimSetIndex );
 
-   cacheP->victimSwapCount++;
+   // Update swaps for both current cache and victim
+   cacheP->swaps++;
+   cacheP->victimP->swaps++;
 }
 
 boolean cacheDoRead( cachePT cacheP, int address, int tag, int index, int offset, int* setIndexP )
@@ -464,8 +467,8 @@ void cacheHitUpdateLFU( cachePT cacheP, int index, int setIndex )
 char* cacheGetNameReplacementPolicyT(replacementPolicyT policy)
 {
    switch(policy){
-      case POLICY_REP_LRU                         : return "POLICY_REP_LRU";
-      case POLICY_REP_LFU                         : return "POLICY_REP_LFU";
+      case POLICY_REP_LRU                         : return "LRU";
+      case POLICY_REP_LFU                         : return "LFU";
       default                                     : return "";
    }
 }
@@ -503,30 +506,33 @@ void cachePrintContents( cachePT cacheP )
    }
 }
 
-void cachePrintStats( cachePT cacheP )
+inline int cacheGetWBCount( cachePT cacheP )
+{
+   return (cacheP) ? cacheP->writeBackCount : 0;
+}
+
+void cacheGetStats( cachePT cacheP, 
+                    int     *readCount, 
+                    int     *readMisses, 
+                    int     *writeCount, 
+                    int     *writeMisses, 
+                    double  *missRate, 
+                    int     *swaps, 
+                    int     *writeBacks, 
+                    int     *memoryTraffic )
 {
    if( !cacheP ) return;
-   int readMisses    = cacheP->readMissCount;
-   int writeMisses   = cacheP->writeMissCount;
-   int readCount     = cacheP->readHitCount + readMisses;
-   int writeCount    = cacheP->writeHitCount + writeMisses;
-   double missRate   = ( (double)(readMisses + writeMisses) ) / ( (double)(readCount + writeCount) );
-   int memoryTraffic = ( cacheP->writePolicy == POLICY_WRITE_BACK_WRITE_ALLOCATE ) ? 
-                         readMisses + writeMisses + cacheP->writeBackCount :
-                         readMisses + writeCount;
-   double accessTime = cacheP->hitTime + (missRate * cacheP->missPenalty) ;
-
-   printf("\n\t====== Simulation results (raw) ======\n");
-   printf("\ta. number of %s reads:\t\t%d\n", cacheP->name, readCount);
-   printf("\tb. number of %s read misses:\t\t%d\n", cacheP->name, readMisses);
-   printf("\tc. number of %s writes:\t\t%d\n", cacheP->name, writeCount);
-   printf("\td. number of %s write misses:\t\t%d\n", cacheP->name, writeMisses);
-   printf("\te. %s miss rate:\t\t%0.4f\n", cacheP->name, missRate);
-   printf("\te. number of swaps:\t\t%d\n", cacheP->victimSwapCount);
-   printf("\tf. number of writebacks from %s:\t\t%d\n", cacheP->name, cacheP->writeBackCount);
-   printf("\tg. total memory traffic:\t\t%d\n\n", memoryTraffic);
-   printf("\t==== Simulation results (performance) ====\n");
-   printf("\t1. average access time:\t\t%0.4f ns", accessTime);
+   *readMisses    = cacheP->readMissCount;
+   *writeMisses   = cacheP->writeMissCount;
+   *readCount     = cacheP->readHitCount + *readMisses;
+   *writeCount    = cacheP->writeHitCount + *writeMisses;
+   *missRate      = ( (double)(*readMisses + *writeMisses) ) / ( (double)(*readCount + *writeCount) );
+   *memoryTraffic = ( cacheP->writePolicy == POLICY_WRITE_BACK_WRITE_ALLOCATE ) ? 
+                         *readMisses + *writeMisses + cacheP->writeBackCount :
+                         *readMisses + *writeCount;
+   *writeBacks    = cacheP->writeBackCount;
+   *swaps         = cacheP->swaps;
+   //double accessTime = cacheP->hitTime + (missRate * cacheP->missPenalty) ;
 }
 
 // In ns

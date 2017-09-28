@@ -13,6 +13,47 @@
 #include "all.h"
 #include "cache.h"
 
+
+void endOfSim( cachePT l1P, cachePT l2P )
+{
+   int l1Reads, l1ReadMisses, l1Writes, l1WriteMisses, l1Swaps, l1WB, l1l2Traffic;
+   int l2Reads, l2ReadMisses, l2Writes, l2WriteMisses, l2Swaps, l2WB, memoryTraffic;
+   double l1MissRate, l2MissRate;
+
+   cacheGetStats( l1P, &l1Reads, &l1ReadMisses, &l1Writes, &l1WriteMisses, &l1MissRate, &l1Swaps, &l1WB, &l1l2Traffic ); 
+   cacheGetStats( l2P, &l2Reads, &l2ReadMisses, &l2Writes, &l2WriteMisses, &l2MissRate, &l2Swaps, &l2WB, &memoryTraffic ); 
+
+   printf("\n\t====== Simulation results (raw) ======\n\n");
+   printf("\ta. number of L1 reads:\t%d\n"                , l1Reads);
+   printf("\tb. number of L1 read misses:\t%d\n"          , l1ReadMisses);
+   printf("\tc. number of L1 writes:\t%d\n"               , l1Writes);
+   printf("\td. number of L1 write misses:\t%d\n"         , l1WriteMisses);
+   printf("\te. L1 miss rate:\t%0.4f\n"                   , l1MissRate);
+   printf("\tf. number of swaps:\t%d\n"                   , l1Swaps);
+   printf("\tg. number of victim cache writeback:\t%d\n"  , (l1P->victimP) ? cacheGetWBCount(l1P->victimP) : 0 );
+   printf("\th. number of L2 reads:\t%d\n"                , l2Reads);
+   printf("\ti. number of L2 read misses:\t%d\n"          , l2ReadMisses);
+   printf("\tj. number of L2 writes:\t%d\n"               , l2Writes);
+   printf("\tk. number of L2 write misses:\t%d\n"         , l2WriteMisses);
+   printf("\tl. L2 miss rate:\t%0.4f\n"                   , l2MissRate);
+   printf("\tm. number of L2 writeback:\t%d\n"            , l2WB);
+   printf("\tn. total memory traffic:\t%d\n"              , memoryTraffic);
+}
+
+void beginOfSim( cachePT l1P, cachePT l2P, char* traceFile )
+{
+   printf("\t===== Simulator configuration =====\n");
+   printf("\tL1_BLOCKSIZE:\t\t\t %d\n"         , l1P->blockSize);
+   printf("\tL1_SIZE:\t\t\t %d\n"              , l1P->size);
+   printf("\tL1_ASSOC:\t\t\t %d\n"             , l1P->assoc);
+   printf("\tVictim_Cache_SIZE:\t\t\t %d\n"    , (l1P->victimP) ? l1P->victimP->size : 0);
+   printf("\tL2_SIZE:\t\t\t %d\n"              , l2P->size);
+   printf("\tL2_ASSOC:\t\t\t %d\n"             , l2P->assoc);
+   printf("\ttrace_file:\t\t%s\n", traceFile);
+   printf("\tReplacement Policy:\t\t %s\n"  , cacheGetNameReplacementPolicyT(l1P->repPolicy));
+   printf("\t===================================\n\n");
+}
+
 void doTrace( cachePT cacheP, FILE* fp )
 {
    char rw;
@@ -64,19 +105,14 @@ int main( int argc, char** argv )
    cacheConnect( l1P, l2P );
    cacheAttachVictimCache( l1P, victimSize, blockSize, &tray );
    
-
-   printf("\t===== Simulator configuration =====\n");
-   cachePrettyPrintConfig( l1P );
-   cachePrettyPrintConfig( l1P->victimP );
-   cachePrettyPrintConfig( l2P );
-   printf("\ttrace_file:\t\t%s\n", traceFile);
-   printf("\t===================================\n\n");
-
+   beginOfSim( l1P, l2P, traceFile );
+   
    doTrace( l1P, fp );
+   
    cachePrintContents( l1P );
    cachePrintContents( l1P->victimP );
    cachePrintContents( l2P );
-   cachePrintStats( l1P );
-   cachePrintStats( l1P->victimP );
-   cachePrintStats( l2P );
+
+   endOfSim( l1P, l2P );
+   
 }
