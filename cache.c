@@ -45,6 +45,7 @@ cachePT  cacheInit(
       int                size, 
       int                assoc, 
       int                blockSize,
+      double             lambda,
       replacementPolicyT repPolicy,
       writePolicyT       writePolicy,
       cacheTimingTrayPT  trayP )
@@ -60,6 +61,7 @@ cachePT  cacheInit(
    cacheP->nSets          = ceil( (double) size / (double) ( assoc*blockSize ) );
    cacheP->repPolicy      = repPolicy;
    cacheP->writePolicy    = writePolicy;
+   cacheP->lambda         = lambda;
    // Let's assume there is no cache below this level during the init phase
    // To add, use the connect phase
    cacheP->nextLevel      = NULL;
@@ -119,7 +121,7 @@ void cacheAttachVictimCache( cachePT cacheP, int size, int blockSize, cacheTimin
       //TODO: Add parent cache identifier
       sprintf(name, "Victim Cache");
       //, cacheP->name);
-      cachePT victimP           = cacheInit( name, size, assoc, blockSize, POLICY_REP_LRU, POLICY_WRITE_BACK_WRITE_ALLOCATE, trayP );
+      cachePT victimP           = cacheInit( name, size, assoc, blockSize, 0.0, POLICY_REP_LRU, POLICY_WRITE_BACK_WRITE_ALLOCATE, trayP );
       // Since victim cache also has access to next level cache, do the correct connection
       victimP->nextLevel        = cacheP->nextLevel;
       victimP->isVictimCache    = TRUE;
@@ -140,6 +142,8 @@ cacheCommT cacheCommunicate( cachePT cacheP, int address, cmdDirT dir )
    cacheCommT comm;
    boolean hit;
    cacheDecodeAddress(cacheP, address, &tag, &index, &offset);
+   cacheP->numAccess++;
+   
    if( dir == CMD_DIR_READ ){
       // Drop data as it is of no concern as of now
       hit                               = cacheDoRead( cacheP, address, tag, index, offset, &setIndex );
@@ -204,7 +208,7 @@ boolean cacheDoReadWriteCommon( cachePT cacheP, int address, int tag, int index,
    // Check if its a hit or a miss by looking in each set
    for( setIndex = 0; setIndex < cacheP->assoc ; setIndex++ ){
       // Check tag IFF data is valid
-      if( /*rowP[setIndex]->valid == 1 && */rowP[setIndex]->tag == tag ){
+      if( rowP[setIndex]->valid == 1 && rowP[setIndex]->tag == tag ){
          hit       = TRUE;
          break;
       }
@@ -220,8 +224,10 @@ boolean cacheDoReadWriteCommon( cachePT cacheP, int address, int tag, int index,
       // Update replacement unit's counter value
       if( cacheP->repPolicy == POLICY_REP_LRU ){
          cacheHitUpdateLRU( cacheP, index, setIndex );
-      } else{
+      } else if( cacheP->repPolicy == POLICY_REP_LFU ){
          cacheHitUpdateLFU( cacheP, index, setIndex );
+      } else{
+         cacheHitUpdateLRFU( cacheP, index, setIndex );
       }
    }
 
@@ -243,8 +249,10 @@ boolean cacheDoReadWriteCommon( cachePT cacheP, int address, int tag, int index,
          // If we don't have success, use the replacement policy
          if( cacheP->repPolicy == POLICY_REP_LRU ){
             setIndex           = cacheFindReplacementUpdateCounterLRU( cacheP, index, tag, setIndex, success );
-         } else{
+         } else if( cacheP->repPolicy == POLICY_REP_LFU ){
             setIndex           = cacheFindReplacementUpdateCounterLFU( cacheP, index, tag, setIndex, success );
+         } else{
+            setIndex           = cacheFindReplacementUpdateCounterLRFU( cacheP, index, tag, setIndex, success );
          }
 
          //-------------- VICTIM CACHE SPECIFIC CODE BEGIN ---------------------------------
@@ -342,6 +350,7 @@ void cacheVictimSwap( cachePT cacheP, int index, int setIndex, int victimIndex, 
    cacheTagP->tag       = newCacheTag;
 
    // Update counters as if a hit
+   // TODO: Fix this if victim supports anything more than LRU
    cacheHitUpdateLRU( cacheP->victimP, victimIndex, victimSetIndex );
 
    // Update swaps for both current cache and victim
@@ -431,6 +440,7 @@ int cacheFindReplacementUpdateCounterLFU( cachePT cacheP, int index, int tag, in
       }
    }
 
+   //TODO: there is no need for a countSet
    // By now we know which block has to be evicted
    // Set the age counter before evicting
    cacheP->tagStoreP[index]->countSet     = rowP[replIndex]->counter;
@@ -438,6 +448,49 @@ int cacheFindReplacementUpdateCounterLFU( cachePT cacheP, int index, int tag, in
    // Update the counter value for the newly placed entry
    // Since its the job of this function to update all counter
    rowP[replIndex]->counter               = cacheP->tagStoreP[index]->countSet + 1;
+
+   return replIndex;
+}
+
+inline double cacheComputeCRF( cachePT cacheP, tagPT *rowP, int setIndex )
+{
+   return 1.0 + rowP[setIndex]->crf * (pow(0.5, cacheP->lambda * ( cacheP->numAccess - rowP[setIndex]->counter )));
+}
+
+// Least Recently/Frequently used
+int cacheFindReplacementUpdateCounterLRFU( cachePT cacheP, int index, int tag, int overrideSetIndex, int doOverride )
+{
+
+   tagPT   *rowP   = cacheP->tagStoreP[index]->rowP;
+   int replIndex   = 0;
+
+   if( doOverride ){
+      replIndex = overrideSetIndex;
+   } else{
+      double *tempCrf = (double*) calloc(cacheP->assoc, sizeof(double));
+
+      // Computer temporary CRF
+      for( int setIndex = 0; setIndex < cacheP->assoc; setIndex++ ){
+         tempCrf[setIndex] = cacheComputeCRF( cacheP, rowP, setIndex );
+      }
+      
+      double minCrf = tempCrf[0];
+
+      // Find the block
+      for( int setIndex = 0; setIndex < cacheP->assoc; setIndex++ ){
+         if( tempCrf[setIndex] < minCrf ){
+            replIndex = setIndex;
+            minCrf    = tempCrf[setIndex];
+         }
+      }
+
+      // Free the allocated memory
+      free( tempCrf );
+   }
+
+   // Update the vals
+   rowP[replIndex]->crf     = 1;
+   rowP[replIndex]->counter = cacheP->numAccess;
 
    return replIndex;
 }
@@ -463,12 +516,19 @@ void cacheHitUpdateLFU( cachePT cacheP, int index, int setIndex )
    cacheP->tagStoreP[index]->rowP[setIndex]->counter++;
 }
 
+void cacheHitUpdateLRFU( cachePT cacheP, int index, int setIndex )
+{
+   tagPT *rowP             = cacheP->tagStoreP[index]->rowP;
+   rowP[setIndex]->crf     = cacheComputeCRF( cacheP, rowP, setIndex );
+   rowP[setIndex]->counter = cacheP->numAccess;
+}
 
 char* cacheGetNameReplacementPolicyT(replacementPolicyT policy)
 {
    switch(policy){
       case POLICY_REP_LRU                         : return "LRU";
       case POLICY_REP_LFU                         : return "LFU";
+      case POLICY_REP_LRFU                        : return "LRFU";
       default                                     : return "";
    }
 }
@@ -530,9 +590,29 @@ void cacheGetStats( cachePT cacheP,
    *memoryTraffic = ( cacheP->writePolicy == POLICY_WRITE_BACK_WRITE_ALLOCATE ) ? 
                          *readMisses + *writeMisses + cacheP->writeBackCount :
                          *readMisses + *writeCount;
+   if( cacheP->victimP != NULL ){
+      int vRreads, vReadMisses, vWrites, vWriteMisses, vSwaps, vWB, vMemoryTraffic;
+      double vMissRate;
+      cacheGetStats( cacheP->victimP, &vRreads, &vReadMisses, &vWrites, &vWriteMisses, &vMissRate, &vSwaps, &vWB, &vMemoryTraffic ); 
+      *memoryTraffic += vWB;
+   }
+
    *writeBacks    = cacheP->writeBackCount;
    *swaps         = cacheP->swaps;
-   //double accessTime = cacheP->hitTime + (missRate * cacheP->missPenalty) ;
+}
+
+// Compute average access time
+double cacheGetAAT( cachePT cacheP )
+{
+   if( cacheP == NULL )
+      return 1.0;
+
+   double missRate      = ( (double)(cacheP->readMissCount + cacheP->writeMissCount) ) / ( (double)(cacheP->numAccess) );
+
+   if( cacheP->nextLevel == NULL )
+      return cacheP->hitTime + (missRate * cacheP->missPenalty) ;
+      
+   return cacheP->hitTime + (missRate * cacheGetAAT( cacheP->nextLevel )) ;
 }
 
 // In ns

@@ -39,6 +39,7 @@ typedef enum {
 typedef enum {
    POLICY_REP_LRU                           = 0,      /* Least Recently Used */
    POLICY_REP_LFU                           = 1,      /* Least Frequently Used */
+   POLICY_REP_LRFU                          = 2,      /* Least Recently/Frequently Used */
 }replacementPolicyT;
 
 // Enum to hold write policies
@@ -53,7 +54,11 @@ typedef struct _tagT{
    boolean           dirty;
    
    // Common counter for LRU and LFU
+   // We will use this counter as LAST_REF_TIMESTAMP for LRFU
    int               counter;
+
+   // Only for LRFU
+   double            crf;
 }tagT;
 
 // Tag store unit cell
@@ -91,6 +96,8 @@ typedef struct _cacheT{
    // Policies
    replacementPolicyT    repPolicy;
    writePolicyT          writePolicy; 
+   // Relevant only for LRFU
+   double                lambda;
    /*
     * Address decoder variables
     */   
@@ -114,6 +121,7 @@ typedef struct _cacheT{
 
    int                  writeBackCount;
    int                  swaps;
+   int                  numAccess;
 
 
    // Timing params
@@ -150,6 +158,7 @@ cachePT  cacheInit(
       int                size, 
       int                assoc, 
       int                blockSize,
+      double             lambda,
       replacementPolicyT repPolicy,
       writePolicyT       writePolicy,
       cacheTimingTrayPT  trayP );
@@ -164,8 +173,10 @@ boolean cacheDoWrite( cachePT cacheP, int address, int tag, int index, int offse
 void cacheWriteBackData( cachePT cacheP, int address );
 int cacheFindReplacementUpdateCounterLRU( cachePT cacheP, int index, int tag, int overrideSetIndex, int doOverride );
 int cacheFindReplacementUpdateCounterLFU( cachePT cacheP, int index, int tag, int overrideSetIndex, int doOverride );
+int cacheFindReplacementUpdateCounterLRFU( cachePT cacheP, int index, int tag, int overrideSetIndex, int doOverride );
 void cacheHitUpdateLRU( cachePT cacheP, int index, int setIndex );
 void cacheHitUpdateLFU( cachePT cacheP, int index, int setIndex );
+void cacheHitUpdateLRFU( cachePT cacheP, int index, int setIndex );
 
 
 char* cacheGetNameReplacementPolicyT(replacementPolicyT policy);
@@ -176,7 +187,9 @@ double cacheComputeMissPenalty( cachePT cacheP, cacheTimingTrayPT trayP );
 double cacheComputeHitTime( cachePT cacheP, cacheTimingTrayPT trayP );
 void cacheAttachVictimCache( cachePT cacheP, int size, int blockSize, cacheTimingTrayPT trayP );
 void cacheVictimSwap( cachePT cacheP, int index, int setIndex, int victimIndex, int victimSetIndex );
+double cacheComputeCRF( cachePT cacheP, tagPT *rowP, int setIndex );
 
+double cacheGetAAT( cachePT cacheP );
 int cacheGetWBCount( cachePT cacheP );
 void cacheGetStats( cachePT cacheP, 
                     int     *readCount, 
