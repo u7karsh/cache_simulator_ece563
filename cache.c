@@ -200,7 +200,7 @@ boolean cacheDoReadWriteCommon( cachePT cacheP, int address, int tag, int index,
    boolean hit               = FALSE;
    int setIndex;
 
-   ASSERT(cacheP->nSets < index, "index translated to more than available! index: %d, nSets: %d", 
+   ASSERT(cacheP->nSets <= index, "index translated to more than available! index: %d, nSets: %d", 
           index, cacheP->nSets);
 
    tagPT* rowP     = cacheP->tagStoreP[index]->rowP;
@@ -452,9 +452,9 @@ int cacheFindReplacementUpdateCounterLFU( cachePT cacheP, int index, int tag, in
    return replIndex;
 }
 
-inline double cacheComputeCRF( cachePT cacheP, tagPT *rowP, int setIndex )
+inline double cacheCRF_F( cachePT cacheP, tagPT *rowP, int setIndex )
 {
-   return 1.0 + rowP[setIndex]->crf * (pow(0.5, cacheP->lambda * ( cacheP->numAccess - rowP[setIndex]->counter )));
+   return rowP[setIndex]->crf * (pow(0.5, cacheP->lambda * ( cacheP->numAccess - rowP[setIndex]->counter )));
 }
 
 // Least Recently/Frequently used
@@ -471,7 +471,7 @@ int cacheFindReplacementUpdateCounterLRFU( cachePT cacheP, int index, int tag, i
 
       // Computer temporary CRF
       for( int setIndex = 0; setIndex < cacheP->assoc; setIndex++ ){
-         tempCrf[setIndex] = cacheComputeCRF( cacheP, rowP, setIndex );
+         tempCrf[setIndex] = cacheCRF_F( cacheP, rowP, setIndex );
       }
       
       double minCrf = tempCrf[0];
@@ -519,7 +519,7 @@ void cacheHitUpdateLFU( cachePT cacheP, int index, int setIndex )
 void cacheHitUpdateLRFU( cachePT cacheP, int index, int setIndex )
 {
    tagPT *rowP             = cacheP->tagStoreP[index]->rowP;
-   rowP[setIndex]->crf     = cacheComputeCRF( cacheP, rowP, setIndex );
+   rowP[setIndex]->crf     = 1 + cacheCRF_F( cacheP, rowP, setIndex );
    rowP[setIndex]->counter = cacheP->numAccess;
 }
 

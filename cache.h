@@ -187,7 +187,7 @@ double cacheComputeMissPenalty( cachePT cacheP, cacheTimingTrayPT trayP );
 double cacheComputeHitTime( cachePT cacheP, cacheTimingTrayPT trayP );
 void cacheAttachVictimCache( cachePT cacheP, int size, int blockSize, cacheTimingTrayPT trayP );
 void cacheVictimSwap( cachePT cacheP, int index, int setIndex, int victimIndex, int victimSetIndex );
-double cacheComputeCRF( cachePT cacheP, tagPT *rowP, int setIndex );
+double cacheCRF_F( cachePT cacheP, tagPT *rowP, int setIndex );
 
 double cacheGetAAT( cachePT cacheP );
 int cacheGetWBCount( cachePT cacheP );
