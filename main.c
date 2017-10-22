@@ -106,13 +106,13 @@ int main( int argc, char** argv )
    int    l1Size         = atoi(argv[2]);
    int    l1Assoc        = atoi(argv[3]);
    
-   int    victimSize;
-   int    l2Size;
-   int    l2Assoc;
-   double lambda;
-   int    repPolicy;
-   int    repPolicyL2;
-   int    writePolicy = POLICY_WRITE_BACK_WRITE_ALLOCATE;
+   int    victimSize     = 0;
+   int    l2Size         = 0;
+   int    l2Assoc        = 0;
+   double lambda         = 0.0;
+   int    repPolicy      = atoi(argv[4]);
+   int    repPolicyL2    = POLICY_REP_LRU;
+   int    writePolicy    = POLICY_WRITE_BACK_WRITE_ALLOCATE;
    char   traceFile[128];
 
    if( argc == 9 ){
@@ -124,8 +124,6 @@ int main( int argc, char** argv )
       repPolicy      = ( lambda >= 0 && lambda <= 1 ) ? POLICY_REP_LRFU : ( lambda == 3 ? POLICY_REP_LFU : POLICY_REP_LRU );
       repPolicyL2    = ( repPolicy == POLICY_REP_LFU ) ? POLICY_REP_LFU : POLICY_REP_LRU;
    } else{
-      victimSize     = 0;
-      repPolicy      = atoi(argv[4]);
       writePolicy    = atoi(argv[5]);
       sprintf(traceFile, "%s", argv[6]);
    }
